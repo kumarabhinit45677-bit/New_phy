@@ -24,8 +24,18 @@
           <label>Charge state <select id="charge"></select></label>
           <label>
             Energy <output id="energyOut"></output>
-            <input id="energy" type="range" min="20" max="5000" value="500" />
+            <input id="energy" type="range" min="1" max="5000000" value="500" />
           </label>
+          <div class="energy-entry">
+            <input id="energyDirect" type="number" min="1" step="any" value="500" />
+            <select id="energyUnit">
+              <option value="eV">eV</option>
+              <option value="keV" selected>keV</option>
+              <option value="MeV">MeV</option>
+              <option value="GeV">GeV</option>
+            </select>
+          </div>
+          <div id="quickEnergyPresets" class="preset-grid"></div>
         </section>
 
         <section class="control-group">
@@ -82,6 +92,7 @@
           <button data-tab="material-properties">Material Properties</button>
           <button data-tab="equations">Physics Equations</button>
           <button data-tab="graphs">Live Graphs</button>
+          <button data-tab="property-evolution">Property Evolution</button>
           <button data-tab="material-comparison">Material Comparison</button>
           <button data-tab="ion-comparison">Ion Comparison</button>
           <button data-tab="history">Experiment History</button>
@@ -145,6 +156,35 @@
               <canvas id="letChart"></canvas>
               <canvas id="stoppingChart"></canvas>
               <canvas id="damageChart"></canvas>
+            </div>
+          </section>
+
+          <section class="tab-view" id="property-evolution">
+            <div class="split-grid">
+              <div class="data-panel">
+                <div class="section-head"><div><h2>Material Health Index</h2></div></div>
+                <div id="healthPanel" class="health-panel"></div>
+              </div>
+              <div class="data-panel">
+                <div class="section-head"><div><h2>Radiation Damage Index</h2></div></div>
+                <div class="table-wrap"><table id="damageIndexTable"></table></div>
+              </div>
+            </div>
+            <div id="stageComparison" class="stage-grid"></div>
+            <div id="livePropertyChanges" class="change-grid"></div>
+            <div class="chart-grid">
+              <canvas id="propertyTimelineChart"></canvas>
+              <canvas id="propertyRadarChart"></canvas>
+            </div>
+            <div class="split-grid">
+              <div class="data-panel">
+                <div class="section-head"><div><h2>Property Change Heatmap</h2></div></div>
+                <div class="table-wrap"><table id="propertyHeatmap"></table></div>
+              </div>
+              <div class="data-panel">
+                <div class="section-head"><div><h2>Correlation Matrix</h2></div></div>
+                <div class="table-wrap"><table id="correlationMatrix"></table></div>
+              </div>
             </div>
           </section>
 

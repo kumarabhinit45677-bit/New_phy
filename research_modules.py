@@ -18,7 +18,23 @@ from periodic_table import Element, get_element
 from physics_engine import BeamParameters, PhysicsEngine, SimulationResult
 
 
-TIMELINE_SECONDS = [0, 10, 60, 600, 3600, 86400, 604800, 2592000]
+TIMELINE_SECONDS = [0, 10, 30, 60, 600, 1800, 3600, 21600, 86400, 604800, 2592000]
+
+PROPERTY_GROUPS = {
+    "structural": ["defect_density_cm3", "dpa", "track_density_cm2"],
+    "chemical": ["surface_energy_mj_m2", "radical_fraction"],
+    "surface": ["surface_roughness_nm", "sputtering_loss_nm"],
+    "morphological": ["track_density_cm2", "surface_roughness_nm"],
+    "mechanical": ["hardness_relative", "integrity_percent"],
+    "electrical": ["conductivity_s_m", "carrier_mobility_percent"],
+    "optical": ["bandgap_ev", "absorption_shift_percent"],
+    "thermal": ["temperature_k", "thermal_conductivity_relative"],
+    "magnetic": ["magnetic_order_relative"],
+    "dielectric": ["dielectric_constant", "dielectric_loss_relative"],
+    "radiation_damage": ["vacancy_density_cm3", "interstitial_density_cm3", "dpa"],
+    "semiconductor": ["bandgap_ev", "leakage_current_multiplier", "carrier_mobility_percent"],
+    "polymer": ["crosslink_density", "chain_scission_density", "carbonization_relative"],
+}
 
 EQUATION_LIBRARY = [
     {"name": "Linear Energy Transfer", "equation": "LET = -dE/dx", "units": "keV/nm", "meaning": "Energy deposited per ion path length."},
@@ -199,6 +215,120 @@ class ResearchSuite:
                 }
             )
         return records
+
+    def property_evolution(self, result: SimulationResult, material: Material) -> Dict[str, object]:
+        """Three-stage material state model for before/during/after irradiation."""
+        track = self.ion_track(result, result.beam_flux_ions_cm2_s * 60.0)
+        surface = self.surface_engineering(result)
+        polymer = self.polymer_irradiation(result, material)
+        semiconductor = self.semiconductor_device(result, material)
+        after_record = self.time_evolution(result, material)[-1]
+        damage = damage_indices(result)
+        health = material_health_index(result, material)
+
+        base = {
+            "conductivity_s_m": material.electrical_conductivity,
+            "bandgap_ev": material.bandgap or 0.0,
+            "hardness_relative": 1.0,
+            "defect_density_cm3": 0.0,
+            "temperature_k": 300.0,
+            "crosslink_density": 0.0,
+            "chain_scission_density": 0.0,
+            "track_density_cm2": 0.0,
+            "vacancy_density_cm3": 0.0,
+            "interstitial_density_cm3": 0.0,
+            "dpa": 0.0,
+            "surface_roughness_nm": 1.0,
+            "sputtering_loss_nm": 0.0,
+            "dielectric_constant": material.dielectric_constant or 1.0,
+            "dielectric_loss_relative": 1.0,
+            "thermal_conductivity_relative": 1.0,
+            "carrier_mobility_percent": 100.0,
+            "leakage_current_multiplier": 1.0,
+            "absorption_shift_percent": 0.0,
+            "magnetic_order_relative": 1.0,
+            "radical_fraction": 0.0,
+            "carbonization_relative": 0.0,
+            "integrity_percent": 100.0,
+            "surface_energy_mj_m2": 25.0,
+        }
+        during = dict(base)
+        during.update(
+            {
+                "conductivity_s_m": material.electrical_conductivity * max(0.03, 1.0 - 0.45 * damage["damage_score"] / 100.0),
+                "bandgap_ev": (material.bandgap or 0.0) + 0.08 * damage["damage_score"] / 100.0,
+                "hardness_relative": 1.0 + 0.25 * min(damage["damage_score"] / 100.0, 1.0),
+                "defect_density_cm3": result.defect_density_cm3,
+                "temperature_k": 300.0 + result.temperature_rise_k,
+                "crosslink_density": polymer["crosslink_density_relative"],
+                "chain_scission_density": polymer["chain_scission_relative"],
+                "track_density_cm2": track["track_density_cm2"],
+                "vacancy_density_cm3": damage["vacancy_density_cm3"],
+                "interstitial_density_cm3": damage["interstitial_density_cm3"],
+                "dpa": result.radiation_damage_dpa,
+                "surface_roughness_nm": surface["surface_roughness_nm"],
+                "sputtering_loss_nm": damage["sputtering_loss_nm"],
+                "dielectric_loss_relative": 1.0 + 1.8 * min(result.radiation_damage_dpa, 1.0),
+                "thermal_conductivity_relative": max(0.15, 1.0 - 0.35 * min(result.radiation_damage_dpa, 1.0)),
+                "carrier_mobility_percent": max(2.0, 100.0 - semiconductor["mobility_degradation_percent"]),
+                "leakage_current_multiplier": semiconductor["leakage_current_multiplier"],
+                "absorption_shift_percent": 6.0 * min(damage["damage_score"] / 100.0, 1.0),
+                "magnetic_order_relative": max(0.2, 1.0 - 0.25 * min(result.radiation_damage_dpa, 1.0)),
+                "radical_fraction": polymer["radical_fraction"],
+                "carbonization_relative": polymer["carbonization_relative"],
+                "integrity_percent": health["material_integrity_percent"],
+                "surface_energy_mj_m2": surface["surface_energy_mj_m2"],
+            }
+        )
+        after = dict(during)
+        after.update(
+            {
+                "conductivity_s_m": after_record["conductivity_s_m"],
+                "bandgap_ev": after_record["bandgap_ev"],
+                "hardness_relative": after_record["relative_hardness"],
+                "defect_density_cm3": after_record["defect_density_cm3"],
+                "temperature_k": after_record["temperature_k"],
+                "integrity_percent": max(0.0, health["material_integrity_percent"] - 0.12 * damage["damage_score"]),
+            }
+        )
+        stages = {"before": base, "during": during, "after": after}
+        return {
+            "stages": stages,
+            "groups": {group: {stage: {metric: stages[stage][metric] for metric in metrics} for stage in stages} for group, metrics in PROPERTY_GROUPS.items()},
+            "timeline": self.property_timeline(result, material),
+            "heatmap": property_change_heatmap(stages),
+            "radar": property_radar(stages),
+            "live_changes": live_property_changes(base, during),
+        }
+
+    def property_timeline(self, result: SimulationResult, material: Material) -> List[Dict[str, float]]:
+        records = []
+        polymer = self.polymer_irradiation(result, material)
+        track = self.ion_track(result, result.beam_flux_ions_cm2_s * 60.0)
+        for record in self.time_evolution(result, material):
+            progress = np.log10(record["time_s"] + 1.0) / np.log10(TIMELINE_SECONDS[-1] + 1.0)
+            records.append(
+                {
+                    "time_s": record["time_s"],
+                    "conductivity_s_m": record["conductivity_s_m"],
+                    "bandgap_ev": record["bandgap_ev"],
+                    "hardness_relative": record["relative_hardness"],
+                    "defect_density_cm3": record["defect_density_cm3"],
+                    "temperature_k": record["temperature_k"],
+                    "crosslink_density": polymer["crosslink_density_relative"] * progress,
+                    "track_density_cm2": track["track_density_cm2"] * progress,
+                }
+            )
+        return records
+
+    def correlation_matrix(self, result: SimulationResult, material: Material) -> Dict[str, object]:
+        timeline = self.property_timeline(result, material)
+        variables = ["time_s", "conductivity_s_m", "bandgap_ev", "hardness_relative", "temperature_k", "defect_density_cm3", "track_density_cm2"]
+        data = np.array([[float(row[key]) for key in variables] for row in timeline], dtype=float)
+        data[:, 0] = np.log10(data[:, 0] + 1.0)
+        matrix = np.corrcoef(data, rowvar=False)
+        matrix = np.nan_to_num(matrix, nan=0.0, posinf=1.0, neginf=-1.0)
+        return {"variables": variables, "matrix": matrix.tolist()}
 
     def annealing_recovery(self, result: SimulationResult, temperature_k: float, duration_s: float) -> Dict[str, float]:
         activation_k = 950.0
@@ -483,6 +613,131 @@ def radiation_hardness_index(record: Dict[str, object]) -> Dict[str, object]:
     else:
         category = "Poor"
     return {"score": score, "category": category}
+
+
+def damage_indices(result: SimulationResult) -> Dict[str, object]:
+    affected_thickness_cm = max(result.penetration_depth_nm, 1.0) * 1.0e-7
+    vacancy_density = result.vacancies_per_ion * result.beam_flux_ions_cm2_s * 60.0 / affected_thickness_cm
+    interstitial_density = result.interstitials_per_ion * result.beam_flux_ions_cm2_s * 60.0 / affected_thickness_cm
+    frenkel_density = min(vacancy_density, interstitial_density)
+    sputtering_loss_nm = result.sputtering_yield_atoms_ion * result.beam_flux_ions_cm2_s * 60.0 * 1.0e-16
+    score = float(
+        np.clip(
+            16.0 * np.log10(result.radiation_damage_dpa + 1.0)
+            + 10.0 * np.log10(result.defect_density_cm3 / 1.0e16 + 1.0)
+            + 7.5 * result.sputtering_yield_atoms_ion
+            + result.temperature_rise_k / 700.0,
+            0.0,
+            100.0,
+        )
+    )
+    if score >= 80:
+        classification = "Critical"
+    elif score >= 55:
+        classification = "Heavy"
+    elif score >= 25:
+        classification = "Moderate"
+    else:
+        classification = "Minimal"
+    return {
+        "vacancy_density_cm3": float(vacancy_density),
+        "interstitial_density_cm3": float(interstitial_density),
+        "frenkel_pair_density_cm3": float(frenkel_density),
+        "defect_density_cm3": result.defect_density_cm3,
+        "dpa": result.radiation_damage_dpa,
+        "sputtering_loss_nm": float(sputtering_loss_nm),
+        "damage_score": score,
+        "classification": classification,
+    }
+
+
+def material_health_index(result: SimulationResult, material: Material) -> Dict[str, object]:
+    damage = damage_indices(result)
+    hardness = radiation_hardness_index(material.to_dict())["score"]
+    damage_percent = damage["damage_score"]
+    resistance = float(np.clip(0.72 * hardness + 0.28 * (100.0 - damage_percent), 0.0, 100.0))
+    integrity = float(np.clip(100.0 - 0.78 * damage_percent + 0.12 * hardness, 0.0, 100.0))
+    lifetime = float(np.clip(100.0 - damage_percent * (1.25 - hardness / 160.0), 0.0, 100.0))
+    if damage_percent >= 75:
+        state = "Severe Damage"
+        color = "red"
+    elif damage_percent >= 50:
+        state = "Damaged"
+        color = "orange"
+    elif damage_percent >= 25:
+        state = "Moderate"
+        color = "yellow"
+    else:
+        state = "Safe"
+        color = "green"
+    return {
+        "material_integrity_percent": integrity,
+        "material_damage_percent": damage_percent,
+        "radiation_resistance_percent": resistance,
+        "remaining_lifetime_percent": lifetime,
+        "status": state,
+        "color": color,
+    }
+
+
+def percent_change(before: float, after: float) -> float:
+    denominator = abs(before) if abs(before) > 1.0e-30 else 1.0
+    return float(100.0 * (after - before) / denominator)
+
+
+def property_status(change_percent: float) -> str:
+    if change_percent >= 10.0:
+        return "Improved"
+    if change_percent <= -35.0:
+        return "Severely Damaged"
+    if change_percent <= -5.0:
+        return "Degraded"
+    return "Stable"
+
+
+def live_property_changes(before: Dict[str, float], during: Dict[str, float]) -> Dict[str, Dict[str, object]]:
+    keys = ["conductivity_s_m", "bandgap_ev", "hardness_relative", "surface_roughness_nm", "defect_density_cm3", "temperature_k"]
+    changes = {}
+    for key in keys:
+        change = percent_change(float(before.get(key, 0.0)), float(during.get(key, 0.0)))
+        changes[key] = {"change_percent": change, "status": property_status(change)}
+    return changes
+
+
+def property_change_heatmap(stages: Dict[str, Dict[str, float]]) -> List[Dict[str, object]]:
+    rows = []
+    for key in ["conductivity_s_m", "bandgap_ev", "hardness_relative", "defect_density_cm3", "temperature_k", "crosslink_density", "track_density_cm2", "dpa"]:
+        values = {stage: float(data.get(key, 0.0)) for stage, data in stages.items()}
+        before = values["before"]
+        max_change = max(abs(percent_change(before, values["during"])), abs(percent_change(before, values["after"])))
+        if max_change >= 75:
+            intensity = "Extreme"
+        elif max_change >= 35:
+            intensity = "High"
+        elif max_change >= 10:
+            intensity = "Moderate"
+        else:
+            intensity = "Low"
+        rows.append({"property": key, "values": values, "max_change_percent": max_change, "intensity": intensity})
+    return rows
+
+
+def property_radar(stages: Dict[str, Dict[str, float]]) -> Dict[str, Dict[str, float]]:
+    def score(stage: Dict[str, float]) -> Dict[str, float]:
+        damage_scale = np.clip(float(stage.get("dpa", 0.0)), 0.0, 1.0)
+        defect_scale = np.clip(np.log10(float(stage.get("defect_density_cm3", 0.0)) / 1.0e12 + 1.0) / 8.0, 0.0, 1.0)
+        return {
+            "electrical": float(np.clip(np.log10(abs(stage.get("conductivity_s_m", 0.0)) + 1.0) / 8.0 * 100.0, 0.0, 100.0)),
+            "mechanical": float(np.clip(stage.get("hardness_relative", 1.0) * 55.0, 0.0, 100.0)),
+            "thermal": float(np.clip(100.0 - (stage.get("temperature_k", 300.0) - 300.0) / 18.0, 0.0, 100.0)),
+            "optical": float(np.clip(100.0 - abs(stage.get("absorption_shift_percent", 0.0)) * 8.0, 0.0, 100.0)),
+            "chemical": float(np.clip(100.0 - stage.get("radical_fraction", 0.0) * 70.0, 0.0, 100.0)),
+            "structural": float(np.clip(100.0 - defect_scale * 100.0, 0.0, 100.0)),
+            "surface": float(np.clip(100.0 - stage.get("surface_roughness_nm", 1.0) * 2.0, 0.0, 100.0)),
+            "radiation_resistance": float(np.clip(100.0 - damage_scale * 100.0, 0.0, 100.0)),
+        }
+
+    return {stage: score(values) for stage, values in stages.items()}
 
 
 def material_damage_score(result: SimulationResult) -> float:

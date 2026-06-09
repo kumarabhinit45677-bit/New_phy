@@ -10,7 +10,7 @@ from pathlib import Path
 from materials_database import get_material
 from periodic_table import get_element
 from physics_engine import BeamParameters, PhysicsEngine, result_to_serializable
-from research_modules import Layer, ResearchSuite
+from research_modules import Layer, ResearchSuite, damage_indices, material_health_index
 
 
 class LabRequestHandler(SimpleHTTPRequestHandler):
@@ -88,6 +88,10 @@ def research_summary(suite: ResearchSuite, parameters: BeamParameters, result, p
         "bragg_peak": suite.bragg_peak(parameters),
         "multilayer": suite.multilayer_target(parameters, layers),
         "time_evolution": suite.time_evolution(result, parameters.target),
+        "property_evolution": suite.property_evolution(result, parameters.target),
+        "damage_index": damage_indices(result),
+        "health_index": material_health_index(result, parameters.target),
+        "correlation_matrix": suite.correlation_matrix(result, parameters.target),
         "annealing": suite.annealing_recovery(result, float(payload.get("annealing_temperature_k", 700.0)), float(payload.get("annealing_duration_s", 3600.0))),
         "radiation_hardness": suite.material_explorer(filters={"radiation_resistant": True}, sort_by="radiation_hardness")[:10],
         "ion_track": suite.ion_track(result, parameters.fluence_ions_cm2),
